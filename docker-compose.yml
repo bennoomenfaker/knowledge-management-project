@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # Knowledge Hub Backend (FastAPI)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      # LM Studio (GGUF local) - Priorité 1
+      - LMSTUDIO_BASE_URL=http://host.docker.internal:1234
+      - LMSTUDIO_MODEL=${LMSTUDIO_MODEL:-deepseek-r1-distill-qwen-1.5b}
+      # Ollama local - Priorité 2
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=opencode
+      - OLLAMA_EMBEDDING_MODEL=mxbai-embed-large
+      # API Cloud - Priorité 3 (fallback)
+      - USE_CLOUD_API=${USE_CLOUD_API:-false}
+      - CLOUD_PROVIDER=${CLOUD_PROVIDER:-deepseek}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+    volumes:
+      - ./backend:/app
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Knowledge Hub Frontend (Next.js)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_SUPABASE_URL=${SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_KEY=${SUPABASE_ANON_KEY}
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # === OLLAMA DEJA INSTALLE LOCALEMENT ===
+  # Le backend se connectera automatiquement à votre Ollama local
+  # via host.docker.internal:11434
+
+networks:
+  knowledge-hub-network:
+    driver: bridge
