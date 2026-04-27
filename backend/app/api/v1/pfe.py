@@ -63,13 +63,13 @@ async def upload_pfe(
         print(f"Database error: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     
-    import asyncio
-    asyncio.create_task(process_pfe_async(str(pfe_id), pdf_content, document_service, ai_service, supabase_service))
+    # Upload réussit - PAS de traitement IA automatique
+    # L'IA peut être lancée manuellement plus tard
     
     return UploadResponse(
         pfe_id=pfe_id,
-        message="PFE uploaded successfully. Processing in background.",
-        status="processing"
+        message="PFE uploaded successfully.",
+        status="uploaded"
     )
 
 
