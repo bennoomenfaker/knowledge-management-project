@@ -67,8 +67,12 @@ class PFEInDB(BaseModel):
     domaine_vic: Optional[str] = None
     mots_cles: Optional[list[str]] = None
     resume: Optional[str] = None
+    summary: Optional[str] = None
+    keywords: Optional[list[str]] = None
     problematic: Optional[str] = None
     methodology: Optional[str] = None
+    solutions: Optional[str] = None
+    state_of_art: Optional[str] = None
     file_path: Optional[str] = None
     file_url: Optional[str] = None
     file_size: Optional[int] = None

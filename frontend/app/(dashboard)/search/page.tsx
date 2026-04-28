@@ -63,8 +63,68 @@ export default function SearchPage() {
   const [aiLoading, setAiLoading] = useState(false);
 
   useEffect(() => {
-    loadAllPFE();
+    // Load with initial filters if any
+    if (filters.domaine_vic || filters.institution || filters.annee) {
+      handleSearchWithFilters();
+    } else {
+      loadAllPFE();
+    }
   }, []);
+
+  useEffect(() => {
+    // Real-time filtering when filters change (if already searched)
+    if (searched) {
+      if (query.trim()) {
+        handleSearch(searchType);
+      } else {
+        handleSearchWithFilters();
+      }
+    }
+  }, [filters]);
+
+  const handleSearchWithFilters = async () => {
+    setLoading(true);
+    setSearched(true);
+    
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const authToken = session?.access_token;
+      
+      const filterParams: any = {};
+      if (filters.domaine_vic) filterParams.domaine_vic = filters.domaine_vic;
+      if (filters.institution) filterParams.institution = filters.institution;
+      if (filters.annee) filterParams.annee = parseInt(filters.annee);
+      
+      const headers: any = { "Content-Type": "application/json" };
+      if (authToken) {
+        headers["Authorization"] = `Bearer ${authToken}`;
+      }
+      
+      const response = await fetch("/api/v1/search/all?limit=50", {
+        headers
+      });
+      let allResults = await response.json();
+      
+      // Apply filters locally
+      let filtered = allResults.results || [];
+      if (filterParams.domaine_vic) {
+        filtered = filtered.filter((r: PFE) => r.domaine_vic === filterParams.domaine_vic);
+      }
+      if (filterParams.institution) {
+        filtered = filtered.filter((r: PFE) => r.institution === filterParams.institution);
+      }
+      if (filterParams.annee) {
+        filtered = filtered.filter((r: PFE) => r.annee === filterParams.annee);
+      }
+      
+      setResults(filtered);
+    } catch (error) {
+      console.error("Filter error:", error);
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const loadAllPFE = async () => {
     setLoading(true);
@@ -243,22 +303,22 @@ export default function SearchPage() {
             <div className="flex-1" />
             
             <button
-              onClick={() => handleSearch("full-text")}
-              disabled={loading || !query.trim()}
+              onClick={() => query.trim() ? handleSearch("full-text") : handleSearchWithFilters()}
+              disabled={loading}
               className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 disabled:opacity-50 text-sm"
             >
               Texte
             </button>
             <button
-              onClick={() => handleSearch("semantic")}
-              disabled={loading || !query.trim()}
+              onClick={() => query.trim() ? handleSearch("semantic") : handleSearchWithFilters()}
+              disabled={loading}
               className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 disabled:opacity-50 text-sm"
             >
               Sémantique
             </button>
             <button
-              onClick={() => handleSearch("hybrid")}
-              disabled={loading || !query.trim()}
+              onClick={() => query.trim() ? handleSearch("hybrid") : handleSearchWithFilters()}
+              disabled={loading}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm"
             >
               Hybride
@@ -277,14 +337,20 @@ export default function SearchPage() {
       {!loading && searched && (
         <div className="space-y-4">
           <p className="text-slate-600">
-            {!query.trim() ? (
-              <>Tous les PFE ({results.length} résultats)</>
-            ) : (
-              <>
-                {results.length} résultat{results.length !== 1 ? "s" : ""} pour "{query}"
-                {searchType !== "hybrid" && <span className="ml-2">({searchType})</span>}
-              </>
-            )}
+            {(() => {
+              const filterParts = [];
+              if (filters.domaine_vic) filterParts.push(domainLabels[filters.domaine_vic] || filters.domaine_vic);
+              if (filters.institution) filterParts.push(filters.institution);
+              if (filters.annee) filterParts.push(filters.annee);
+              
+              if (!query.trim()) {
+                if (filterParts.length > 0) {
+                  return <>PFE filtrés par {filterParts.join(", ")} ({results.length} résultats)</>;
+                }
+                return <>Tous les PFE ({results.length} résultats)</>;
+              }
+              return <> {results.length} résultat{results.length !== 1 ? "s" : ""} pour "{query}"</>;
+            })()}
           </p>
           
           {results.length === 0 ? (

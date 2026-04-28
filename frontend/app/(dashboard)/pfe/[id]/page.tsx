@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, FileText, User, Calendar, Building2, Tag, Download, Eye } from "lucide-react";
+import { ArrowLeft, FileText, User, Calendar, Building2, Tag, Download, Eye, Loader2, Sparkles } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 interface PFE {
@@ -17,8 +17,12 @@ interface PFE {
   type_veille: string;
   mots_cles: string[];
   resume: string;
+  summary: string;
+  keywords: string[];
   problematic: string;
   methodology: string;
+  solutions: string;
+  state_of_art: string;
   file_path: string;
   file_url?: string;
   file_size: number;
@@ -54,6 +58,7 @@ export default function PFEDetailPage() {
   const [pfe, setPFE] = useState<PFE | null>(null);
   const [loading, setLoading] = useState(true);
   const [viewerUrl, setViewerUrl] = useState<string | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
 
   useEffect(() => {
     if (pfeId) {
@@ -87,6 +92,31 @@ export default function PFEDetailPage() {
     }
   };
 
+  const triggerAnalysis = async () => {
+    setAnalyzing(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      
+      const response = await fetch(`/api/v1/pfe/${pfeId}/analyze`, {
+        method: "POST",
+        headers: token ? { "Authorization": `Bearer ${token}` } : {}
+      });
+      
+      if (response.ok) {
+        alert("Analyse en cours...");
+        setTimeout(loadPFE, 3000); // Reload after 3s
+      } else {
+        alert("Erreur lors de l'analyse");
+      }
+    } catch (error) {
+      console.error("Analysis error:", error);
+      alert("Erreur lors de l'analyse");
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
   const generateViewerUrl = (filePath: string) => {
     const minioHost = "127.0.0.1:9000";
     const encodedPath = btoa(filePath).replace(/=/g, '');
@@ -103,8 +133,12 @@ export default function PFEDetailPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      <div className="flex flex-col items-center justify-center h-64 space-y-4">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+        <div className="text-center">
+          <p className="text-slate-600 font-medium">Chargement du PFE...</p>
+          <p className="text-sm text-slate-500 mt-1">Analyse avec l'IA en cours...</p>
+        </div>
       </div>
     );
   }
@@ -151,8 +185,56 @@ export default function PFEDetailPage() {
               }`}>
                 {pfe.status}
               </span>
+              <button
+                onClick={triggerAnalysis}
+                disabled={analyzing || !pfe.file_path}
+                className="flex items-center gap-2 px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {analyzing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Sparkles className="w-4 h-4" />
+                )}
+                Analyser avec IA
+              </button>
             </div>
           </div>
+        </div>
+
+        {/* Gemini AI Summary */}
+        <div className="mb-6">
+          <h2 className="text-lg font-semibold text-slate-900 mb-2 flex items-center gap-2">
+            Résumé IA
+            <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Gemini</span>
+          </h2>
+          {pfe.summary ? (
+            <p className="text-slate-600">{pfe.summary}</p>
+          ) : pfe.status === 'complete' ? (
+            <p className="italic text-slate-500">Aucun résumé généré</p>
+          ) : (
+            <p className="italic text-slate-500">Analyse en cours...</p>
+          )}
+        </div>
+
+        {/* Gemini AI Keywords */}
+        <div className="mb-6">
+          <h2 className="text-lg font-semibold text-slate-900 mb-2 flex items-center gap-2">
+            Mots-clés IA
+            <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">Gemini</span>
+          </h2>
+          {pfe.keywords && pfe.keywords.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {pfe.keywords.map((kw, i) => (
+                <span key={i} className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm">
+                  {kw}
+                </span>
+              ))}
+            </div>
+          ) : pfe.status === 'complete' ? (
+            <p className="italic text-slate-500">Aucun mot-clé généré</p>
+          ) : (
+            <p className="italic text-slate-500">Analyse en cours...</p>
+          )}
         </div>
 
         {pfe.resume && (
@@ -173,6 +255,20 @@ export default function PFEDetailPage() {
           <div className="mb-6">
             <h2 className="text-lg font-semibold text-slate-900 mb-2">Méthodologie</h2>
             <p className="text-slate-600">{pfe.methodology}</p>
+          </div>
+        )}
+
+        {pfe.solutions && (
+          <div className="mb-6">
+            <h2 className="text-lg font-semibold text-slate-900 mb-2">Solutions proposées</h2>
+            <p className="text-slate-600">{pfe.solutions}</p>
+          </div>
+        )}
+
+        {pfe.state_of_art && (
+          <div className="mb-6">
+            <h2 className="text-lg font-semibold text-slate-900 mb-2">État de l'art</h2>
+            <p className="text-slate-600 whitespace-pre-line">{pfe.state_of_art}</p>
           </div>
         )}
 

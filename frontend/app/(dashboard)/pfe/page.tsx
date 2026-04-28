@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
-import { FileText, User, Calendar, Building2, Tag, MoreVertical, Edit, Trash2, Eye } from "lucide-react";
+import { FileText, User, Calendar, Building2, Tag, MoreVertical, Edit, Trash2, Eye, Grid, List } from "lucide-react";
 
 const domainLabels: Record<string, string> = {
   intelligence_competitive: "Intelligence Compétitive",
@@ -45,6 +45,7 @@ export default function PFEListPage() {
   const [pfeList, setPFEList] = useState<PFE[]>([]);
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
+  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
 
   useEffect(() => {
     checkUserAndLoadPFE();
@@ -97,9 +98,25 @@ export default function PFEListPage() {
           <h1 className="text-2xl font-bold text-slate-900">Tous les PFE</h1>
           <p className="text-slate-600">{pfeList.length} mémoire(s) disponible(s)</p>
         </div>
-        <Link href="/pfe/upload" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
-          Uploader un PFE
-        </Link>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setViewMode("grid")}
+            className={`p-2 rounded-lg ${viewMode === "grid" ? "bg-blue-100 text-blue-600" : "text-slate-400 hover:text-slate-600"}`}
+            title="Vue grille"
+          >
+            <Grid className="w-5 h-5" />
+          </button>
+          <button
+            onClick={() => setViewMode("list")}
+            className={`p-2 rounded-lg ${viewMode === "list" ? "bg-blue-100 text-blue-600" : "text-slate-400 hover:text-slate-600"}`}
+            title="Vue liste"
+          >
+            <List className="w-5 h-5" />
+          </button>
+          <Link href="/pfe/upload" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 ml-2">
+            Uploader un PFE
+          </Link>
+        </div>
       </div>
 
       {pfeList.length === 0 ? (
@@ -109,6 +126,43 @@ export default function PFEListPage() {
           <Link href="/pfe/upload" className="text-blue-600 hover:underline">
             Uploader le premier PFE
           </Link>
+        </div>
+      ) : viewMode === "grid" ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {pfeList.map((pfe) => (
+            <Link key={pfe.id} href={`/pfe/${pfe.id}`} className="bg-white rounded-xl border border-slate-200 p-4 hover:border-blue-300 transition flex flex-col">
+              <div className="flex-1">
+                <h3 className="font-semibold text-slate-900 line-clamp-2">{pfe.titre}</h3>
+                <p className="text-sm text-slate-600 mt-1">{pfe.auteur} • {pfe.annee}</p>
+                <p className="text-xs text-slate-500 mt-2">{pfe.institution}</p>
+              </div>
+              {pfe.resume && (
+                <p className="text-slate-600 text-sm mt-3 line-clamp-3">{pfe.resume}</p>
+              )}
+              {pfe.mots_cles && pfe.mots_cles.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-3">
+                  {pfe.mots_cles.slice(0, 3).map((kw, i) => (
+                    <span key={i} className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs">
+                      {kw}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
+                <span className={`px-2 py-0.5 rounded text-xs ${
+                  pfe.status === 'complete' ? 'bg-green-100 text-green-700' :
+                  pfe.status === 'en_traitement' ? 'bg-yellow-100 text-yellow-700' :
+                  pfe.status === 'erreur' ? 'bg-red-100 text-red-700' :
+                  'bg-slate-100 text-slate-700'
+                }`}>
+                  {pfe.status}
+                </span>
+                <span className="text-xs text-slate-500">
+                  {domainLabels[pfe.domaine_vic] || pfe.domaine_vic}
+                </span>
+              </div>
+            </Link>
+          ))}
         </div>
       ) : (
         <div className="space-y-4">

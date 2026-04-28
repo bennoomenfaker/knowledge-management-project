@@ -22,6 +22,20 @@ ALTER TABLE pfe_documents DROP CONSTRAINT IF EXISTS type_veille_check;
 ALTER TABLE pfe_documents ADD CONSTRAINT type_veille_check 
     CHECK (type_veille IN ('strategique', 'concurrentielle', 'reglementaire', 'technologique', 'juridique', 'commerciale', 'marketing', 'organisationnelle'));
 
+-- Add summary and keywords columns for Gemini AI analysis
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='pfe_documents' AND column_name='summary') THEN
+        ALTER TABLE pfe_documents ADD COLUMN summary TEXT;
+    END IF;
+    
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                   WHERE table_name='pfe_documents' AND column_name='keywords') THEN
+        ALTER TABLE pfe_documents ADD COLUMN keywords TEXT[];
+    END IF;
+END $$;
+
 -- Verify the changes
 SELECT column_name, data_type, character_maximum_length
 FROM information_schema.columns

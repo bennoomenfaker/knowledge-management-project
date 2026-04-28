@@ -1,6 +1,9 @@
 import os
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 class Settings(BaseSettings):
@@ -40,6 +43,7 @@ def get_settings() -> Settings:
         cloud_provider=os.environ.get("CLOUD_PROVIDER", "deepseek"),
         deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
         google_api_key=os.environ.get("GOOGLE_API_KEY", ""),
+        lmstudio_model=os.environ.get("LMSTUDIO_MODEL", "deepseek-r1-distill-qwen-1.5b"),
         jwt_secret=os.environ.get("JWT_SECRET", "dev-secret"),
         environment=os.environ.get("ENVIRONMENT", "development"),
     )

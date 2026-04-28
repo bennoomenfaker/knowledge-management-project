@@ -14,6 +14,24 @@ from app.deps import get_current_user, get_optional_user
 router = APIRouter(prefix="/ai", tags=["AI"])
 
 
+@router.get("/test")
+async def ai_test(
+    ai_service: HybridAIService = Depends(get_hybrid_ai_service)
+):
+    """Test AI providers"""
+    status = await ai_service.check_availability()
+    
+    test_prompt = "Dis 'OK' en français"
+    answer = await ai_service._generate(test_prompt, max_tokens=10)
+    
+    return {
+        "status": status,
+        "test_prompt": test_prompt,
+        "test_answer": answer,
+        "success": bool(answer)
+    }
+
+
 @router.get("/status")
 async def ai_status(
     ai_service: HybridAIService = Depends(get_hybrid_ai_service)
@@ -235,8 +253,8 @@ Réponse:"""
     return {
         "pfe_id": pfe_id,
         "question": question,
-        "answer": answer or "Impossible de générer une réponse. Vérifiez que LM Studio ou Ollama est lancé.",
-        "model_used": status.get("active_model", "hybrid"),
+        "answer": answer or "Erreur: tous les fournisseurs IA ont échoué. Vérifiez LM Studio, DeepSeek ou Gemini.",
+        "model_used": status.get("active_model", "unknown"),
         "pfe_title": pfe.get("titre")
     }
 

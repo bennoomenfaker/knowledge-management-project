@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 from app.models.pfe import PFESearchRequest, SemanticSearchRequest, PFEResponseWithEmbedding
 from app.services.search_service import get_search_service, SearchService
@@ -13,10 +13,21 @@ router = APIRouter(prefix="/search", tags=["Search"])
 async def get_all_pfe(
     limit: int = 50,
     offset: int = 0,
+    domaine_vic: str = Query("", description="Filter by domain"),
+    institution: str = Query("", description="Filter by institution"),
+    annee: int = Query(None, description="Filter by year"),
     supabase_service: SupabaseService = Depends(get_supabase_service)
 ):
-    """Get all PFE documents without search query"""
-    pfe_list = await supabase_service.get_all_pfe(limit, offset)
+    """Get all PFE documents with optional filters"""
+    filters = {}
+    if domaine_vic:
+        filters["domaine_vic"] = domaine_vic
+    if institution:
+        filters["institution"] = institution
+    if annee:
+        filters["annee"] = annee
+    
+    pfe_list = await supabase_service.get_all_pfe(limit, offset, filters if filters else None)
     return {"results": pfe_list, "total": len(pfe_list)}
 
 

@@ -3,257 +3,173 @@ import json
 import re
 import httpx
 import os
+import asyncio
 from app.config import get_settings
 
 
 settings = get_settings()
 
-AVAILABLE_LOCAL_MODELS = ["opencode", "openclaude", "pi", "llama3", "mistral", "codellama"]
-FALLBACK_MODELS = ["deepseek-chat", "gemini-2.0-flash"]
+# Ports LM Studio à tester (dans l'ordre)
+LM_STUDIO_PORTS = [1234, 1235, 1236, 1237]
+LM_STUDIO_MODELS =  ['qwen2.5-coder-1.5b', 'deepseek-r1-distill-qwen-1.5b', 'mistral-7b-instruct-v0.3-bnb-wesh-lora', 'text-embedding-nomic-embed-text-v1.5']
 
 
 class HybridAIService:
     def __init__(self):
-        # Configuration LM Studio (GGUF local) - Priorité 1
-        self.lmstudio_base_url = os.environ.get("LMSTUDIO_BASE_URL", "http://localhost:1234")
-        self.lmstudio_model = os.environ.get("LMSTUDIO_MODEL", "deepseek-r1-distill-qwen-1.5b")
-        
-        # Configuration Ollama (local) - Priorité 2
-        self.ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.local_model = os.environ.get("OLLAMA_MODEL", "opencode")
-        self.embedding_model = os.environ.get("OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large")
-        
-        # Configuration API Cloud (fallback)
-        self.use_cloud = os.environ.get("USE_CLOUD_API", "false").lower() == "true"
-        self.cloud_provider = os.environ.get("CLOUD_PROVIDER", "deepseek")
+        # Configuration API Cloud (Priorité 1 et 2)
         self.deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
         self.google_key = os.environ.get("GOOGLE_API_KEY", "")
         
-        self._local_available = None
-        self._lmstudio_available = None
-        self._available_models = []
-    
+        # Configuration LM Studio (Priorité 3 - Fallback local)
+        self.lm_studio_ports = LM_STUDIO_PORTS
+        self.lm_studio_models = LM_STUDIO_MODELS
+        self.lm_studio_model = os.environ.get("LMSTUDIO_MODEL", LM_STUDIO_MODELS[0])
+        
+        self._lm_studio_url = None
+        self._lm_studio_models = None
+        
+    async def _find_lm_studio(self) -> Optional[str]:
+        """Trouve un serveur LM Studio actif parmi les ports disponibles"""
+        if self._lm_studio_url:
+            return self._lm_studio_url
+        
+        for port in self.lm_studio_ports:
+            url = f"http://localhost:{port}"
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    response = await client.get(f"{url}/v1/models")
+                    if response.status_code == 200:
+                        data = response.json()
+                        models = [m.get("id") for m in data.get("data", [])]
+                        print(f"[AI] LM Studio trouvé sur port {port} avec modèles: {models}")
+                        self._lm_studio_url = url
+                        self._lm_studio_models = models
+                        return url
+            except Exception:
+                continue
+        
+        return None
+
     async def check_availability(self) -> dict:
-        """Vérifie les services disponibles"""
-        lmstudio_status = await self._check_lmstudio()
-        local_status = await self._check_local_ollama()
-        local_models = await self._list_local_models() if local_status else []
+        """Vérifie les services disponibles - Priorité: DeepSeek → Gemini → LM Studio"""
+        deepseek_ok = bool(self.deepseek_key)
+        gemini_ok = bool(self.google_key)
+        lm_studio_url = await self._find_lm_studio()
+        
+        available_models = []
+        active_model = None
+        use_cloud = False
+        
+        # Priorité 1: DeepSeek
+        if deepseek_ok:
+            available_models.append("deepseek-chat")
+            active_model = "deepseek-chat"
+            use_cloud = True
+        
+        # Priorité 2: Gemini
+        if gemini_ok:
+            available_models.append("gemini-2.0-flash")
+            if not active_model:
+                active_model = "gemini-2.0-flash"
+                use_cloud = True
+        
+        # Priorité 3: LM Studio
+        if lm_studio_url and self._lm_studio_models:
+            available_models.extend(self._lm_studio_models)
+            if not active_model:
+                active_model = self._lm_studio_models[0] if self._lm_studio_models else self.lm_studio_model
         
         return {
-            "lmstudio_available": lmstudio_status,
-            "local_available": local_status,
-            "local_models": local_models,
-            "use_cloud": self.use_cloud or (not lmstudio_status and not local_status),
-            "cloud_provider": self.cloud_provider if self.use_cloud or (not lmstudio_status and not local_status) else None,
-            "active_model": self._determine_best_model(local_models, lmstudio_status, local_status)
+            "deepseek_available": deepseek_ok,
+            "gemini_available": gemini_ok,
+            "lm_studio_available": lm_studio_url is not None,
+            "lm_studio_url": lm_studio_url,
+            "lm_studio_models": self._lm_studio_models or [],
+            "available_models": available_models,
+            "active_model": active_model,
+            "use_cloud": use_cloud,
+            "priority": "DeepSeek → Gemini → LM Studio"
         }
-    
-    async def _check_lmstudio(self) -> bool:
-        """Vérifie si LM Studio est disponible"""
-        if self._lmstudio_available is not None:
-            return self._lmstudio_available
+
+    async def _generate_with_retry(self, func, *args, max_retries: int = 2, **kwargs) -> Optional[str]:
+        """Exécute avec retry et exponential backoff"""
+        for attempt in range(max_retries + 1):
+            try:
+                result = await func(*args, **kwargs)
+                if result:
+                    return result
+            except Exception as e:
+                print(f"[AI] Tentative {attempt + 1}/{max_retries + 1} échouée: {e}")
+                if attempt < max_retries:
+                    await asyncio.sleep(2 ** attempt)
+        return None
+
+    async def _generate(self, prompt: str, max_tokens: int = 2000) -> Optional[str]:
+        """Génération - LM Studio local en premier, puis cloud APIs"""
         
-        try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                response = await client.get(f"{self.lmstudio_base_url}/v1/models")
-                self._lmstudio_available = response.status_code == 200
-                print(f"[AI] LM Studio: {'✓ Disponible' if self._lmstudio_available else '✗ Non disponible'}")
-                return self._lmstudio_available
-        except Exception as e:
-            print(f"[AI] LM Studio non joignable: {e}")
-            self._lmstudio_available = False
-            return False
-    
-    async def _check_local_ollama(self) -> bool:
-        """Vérifie si Ollama local est disponible"""
-        if self._local_available is not None:
-            return self._local_available
+        # Test LM Studio FIRST (local = plus rapide)
+        lm_url = await self._find_lm_studio()
+        if lm_url and self._lm_studio_models:
+            for model in self._lm_studio_models:
+                try:
+                    response = await self._generate_lm_studio_model(lm_url, model, prompt, max_tokens)
+                    if response:
+                        print(f"[AI] Success via LM Studio {model}")
+                        return response
+                except Exception as e:
+                    print(f"[AI] LM {model}: {e}")
+                    continue
         
+        # DeepSeek cloud
+        if self.deepseek_key:
+            try:
+                response = await self._generate_deepseek(prompt, max_tokens)
+                if response:
+                    return response
+            except Exception as e:
+                print(f"[AI] DeepSeek: {e}")
+        
+        # Gemini cloud  
+        if self.google_key:
+            try:
+                response = await self._generate_google(prompt, max_tokens)
+                if response:
+                    return response
+            except Exception as e:
+                print(f"[AI] Gemini: {e}")
+        
+        print("[AI] All failed")
+        return None
+
+    async def _test_deepseek(self, prompt: str, max_tokens: int) -> Optional[str]:
+        """Test DeepSeek API avec petit prompt"""
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                response = await client.get(f"{self.ollama_base_url}/api/tags")
-                self._local_available = response.status_code == 200
-                print(f"[AI] Ollama local: {'✓ Disponible' if self._local_available else '✗ Non disponible'}")
-                return self._local_available
-        except Exception as e:
-            print(f"[AI] Ollama local non joignable: {e}")
-            self._local_available = False
-            return False
-    
-    async def _list_local_models(self) -> List[str]:
-        """Liste les modèles Ollama disponibles"""
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{self.ollama_base_url}/api/tags")
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    "https://api.deepseek.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {self.deepseek_key}"},
+                    json={
+                        "model": "deepseek-chat",
+                        "messages": [{"role": "user", "content": "Hi"}],
+                        "max_tokens": 5
+                    }
+                )
                 if response.status_code == 200:
                     data = response.json()
-                    models = [m["name"] for m in data.get("models", [])]
-                    print(f"[AI] Modèles locaux: {models}")
-                    return models
-                return []
+                    print(f"[AI] DeepSeek API working")
+                    return data["choices"][0]["message"]["content"].strip()
         except Exception as e:
-            print(f"[AI] Erreur listage modèles: {e}")
-            return []
-    
-    def _determine_best_model(self, local_models: List[str], lmstudio_available: bool, ollama_available: bool) -> str:
-        """Détermine le meilleur modèle à utiliser"""
-        # Priorité 1: LM Studio
-        if lmstudio_available:
-            print(f"[AI] Utilisation LM Studio: {self.lmstudio_model}")
-            return f"lmstudio:{self.lmstudio_model}"
-        
-        # Priorité 2: Ollama local
-        if ollama_available:
-            for preferred in AVAILABLE_LOCAL_MODELS:
-                if preferred in local_models:
-                    print(f"[AI] Utilisation Ollama: {preferred}")
-                    return preferred
-            
-            if local_models:
-                print(f"[AI] Utilisation Ollama: {local_models[0]}")
-                return local_models[0]
-        
-        # Priorité 3: API Cloud
-        print(f"[AI] Fallback vers API cloud: {self._get_cloud_model()}")
-        return self._get_cloud_model()
-    
-    def _get_cloud_model(self) -> str:
-        """Retourne le modèle cloud configuré"""
-        if self.cloud_provider == "google":
-            return "gemini-2.0-flash"
-        return "deepseek-chat"
-    
-    async def generate_summary(self, text: str, max_length: int = 500) -> Optional[str]:
-        prompt = f"Résumez le texte suivant en français en environ {max_length} caractères:\n\n{text[:3000]}\n\nRésumé:"
-        return await self._generate(prompt)
-    
-    async def generate_problematic(self, text: str, max_length: int = 200) -> Optional[str]:
-        prompt = f"Formulez la problématique centrale de ce texte en une phrase en français (max {max_length} caractères):\n\n{text[:3000]}\n\nProblématique:"
-        return await self._generate(prompt, max_tokens=max_length)
-    
-    async def generate_keywords(self, text: str, max_keywords: int = 10) -> Optional[List[str]]:
-        prompt = f"Extrairez les {max_keywords} mots-clés du texte suivant en format JSON:\n\n{text[:3000]}\n\nMots-clés (JSON):"
-        response = await self._generate(prompt)
-        if response:
-            try:
-                keywords = json.loads(response)
-                return keywords if isinstance(keywords, list) else []
-            except json.JSONDecodeError:
-                import re
-                return re.findall(r'"([^"]+)"', response)[:max_keywords]
-        return []
-    
-    async def classify_domain(self, text: str) -> Optional[dict]:
-        domains = [
-            "intelligence_competitive", "veille_strategique", "management_information",
-            "analyse_strategique", "intelligence_economique", "gestion_connaissance",
-            "data_intelligence", "securite_informationnelle"
-        ]
-        prompt = f"Classifiez dans: {', '.join(domains)}. JSON: {{\"domaine\": \"...\", \"confiance\": 0.95}}\n\n{text[:2000]}\n\nJSON:"
-        response = await self._generate(prompt)
-        if response:
-            try:
-                return json.loads(response)
-            except:
-                return {"domaine": domains[0], "confiance": 0.5}
+            print(f"[AI] DeepSeek test failed: {e}")
         return None
-    
-    async def generate_embedding(self, text: str) -> Optional[List[float]]:
-        # Essayer LM Studio d'abord
-        lmstudio_ok = await self._check_lmstudio()
-        if lmstudio_ok:
-            try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.post(
-                        f"{self.lmstudio_base_url}/v1/embeddings",
-                        json={"model": self.lmstudio_model, "input": text[:2000]}
-                    )
-                    if response.status_code == 200:
-                        return response.json().get("data", [{}])[0].get("embedding")
-            except Exception as e:
-                print(f"[AI] Embedding LM Studio échoué: {e}")
-        
-        # Fallback Ollama
-        local_ok = await self._check_local_ollama()
-        if local_ok:
-            try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.post(
-                        f"{self.ollama_base_url}/api/embeddings",
-                        json={"model": self.embedding_model, "prompt": text[:2000]}
-                    )
-                    if response.status_code == 200:
-                        return response.json().get("embedding")
-            except Exception as e:
-                print(f"[AI] Embedding Ollama échoué: {e}")
-        
-        print("[AI] Embedding: tous les services ont échoué, retour None")
-        return None
-    
-    async def generate_simple_summary(self, text: str, max_length: int = 500) -> Optional[str]:
-        """Génère un résumé simple sans utiliser LM Studio - pour tests"""
-        prompt = f"""Résume en 2-3 phrases ce texte en français:\n\n{text[:1500]}\n\nRésumé:"""
-        return await self._generate(prompt, max_tokens=max_length)
-    
-    async def generate_state_of_art(self, contexte: str, documents: List[dict]) -> Optional[str]:
-        sources = "\n\n".join([
-            f"Doc {i+1}: {d.get('titre', 'N/A')} - {d.get('auteur', 'N/A')} ({d.get('annee', 'N/A')})\nRésumé: {d.get('resume', 'N/A')[:300]}"
-            for i, d in enumerate(documents[:5])
-        ])
-        prompt = f"État de l'art sur: {contexte}\n\n{sources}\n\nSynthèse:"
-        return await self._generate(prompt)
-    
-    async def extract_concepts_cles(self, text: str) -> Optional[List[str]]:
-        prompt = f"Concepts clés en JSON:\n\n{text[:2000]}\n\nJSON:"
-        response = await self._generate(prompt)
-        if response:
-            try:
-                return json.loads(response)
-            except:
-                return []
-        return []
-    
-    async def _generate(self, prompt: str, max_tokens: int = 2000) -> Optional[str]:
-        # Priorité 1: LM Studio (local, privé et rapide)
-        lmstudio_ok = await self._check_lmstudio()
-        if lmstudio_ok:
-            try:
-                response = await self._generate_lmstudio(prompt, max_tokens)
-                if response:
-                    return response
-            except Exception as e:
-                print(f"[AI] LM Studio échoué: {e}")
-        
-        # Priorité 2: Ollama local
-        local_ok = await self._check_local_ollama()
-        if local_ok:
-            try:
-                response = await self._generate_local(prompt, max_tokens)
-                if response:
-                    return response
-            except Exception as e:
-                print(f"[AI] Ollama échoué: {e}")
-        
-        # Priorité 3: API Cloud (fallback)
-        if self.use_cloud or (self.deepseek_key or self.google_key):
-            try:
-                response = await self._generate_cloud(prompt, max_tokens)
-                if response:
-                    print(f"[AI] Réponse via Cloud API")
-                    return response
-            except Exception as e:
-                print(f"[AI] Cloud échoué: {e}")
-        
-        return None
-    
-    async def _generate_lmstudio(self, prompt: str, max_tokens: int) -> Optional[str]:
-        """Génère via LM Studio (API OpenAI compatible)"""
+
+    async def _generate_deepseek(self, prompt: str, max_tokens: int) -> Optional[str]:
         try:
-            async with httpx.AsyncClient(timeout=180.0) as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
-                    f"{self.lmstudio_base_url}/v1/chat/completions",
+                    "https://api.deepseek.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {self.deepseek_key}"},
                     json={
-                        "model": self.lmstudio_model,
+                        "model": "deepseek-chat",
                         "messages": [{"role": "user", "content": prompt}],
                         "max_tokens": max_tokens,
                         "temperature": 0.7
@@ -261,61 +177,14 @@ class HybridAIService:
                 )
                 if response.status_code == 200:
                     data = response.json()
-                    content = data["choices"][0]["message"]["content"]
-                    content = re.sub(r'<think>[\s\S]*?</think>\s*', '', content)
-                    content = re.sub(r'\*\*([^*]+)\*\*', r'\1', content)
-                    content = content.replace('洗净', '').strip()
-                    print(f"[AI] Réponse générée via LM Studio")
-                    return content.strip()
+                    print(f"[AI] Réponse via DeepSeek API")
+                    return data["choices"][0]["message"]["content"].strip()
+                else:
+                    print(f"[AI] DeepSeek error: {response.status_code} - {response.text}")
         except Exception as e:
-            print(f"[AI] LM Studio API error: {e}")
+            print(f"[AI] DeepSeek error: {e}")
         return None
-    
-    async def _generate_local(self, prompt: str, max_tokens: int) -> Optional[str]:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                f"{self.ollama_base_url}/api/generate",
-                json={
-                    "model": self.local_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"num_predict": max_tokens}
-                }
-            )
-            if response.status_code == 200:
-                data = response.json()
-                print(f"[AI] Réponse générée via Ollama local")
-                return data.get("response")
-        return None
-    
-    async def _generate_cloud(self, prompt: str, max_tokens: int) -> Optional[str]:
-        if self.cloud_provider == "deepseek" and self.deepseek_key:
-            return await self._generate_deepseek(prompt, max_tokens)
-        elif self.cloud_provider == "google" and self.google_key:
-            return await self._generate_google(prompt, max_tokens)
-        print("[AI] Aucune clé API cloud configurée")
-        return None
-    
-    async def _generate_deepseek(self, prompt: str, max_tokens: int) -> Optional[str]:
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    "https://api.deepseek.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {self.deepseek_key}"},
-                    json={
-                        "model": "deepseek-chat",
-                        "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": max_tokens
-                    }
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    print(f"[AI] Réponse générée via DeepSeek")
-                    return data["choices"][0]["message"]["content"]
-        except Exception as e:
-            print(f"[AI] DeepSeek API error: {e}")
-        return None
-    
+
     async def _generate_google(self, prompt: str, max_tokens: int) -> Optional[str]:
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -325,17 +194,190 @@ class HybridAIService:
                 )
                 if response.status_code == 200:
                     data = response.json()
-                    print(f"[AI] Réponse générée via Google Gemini")
-                    return data["candidates"][0]["content"]["parts"][0]["text"]
+                    print(f"[AI] Réponse via Google Gemini API")
+                    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
         except Exception as e:
-            print(f"[AI] Google API error: {e}")
+            print(f"[AI] Gemini error: {e}")
         return None
-    
-    async def check_ollama_health(self) -> bool:
-        return await self._check_local_ollama()
-    
-    async def check_lmstudio_health(self) -> bool:
-        return await self._check_lmstudio()
+
+    async def _generate_lm_studio(self, base_url: str, prompt: str, max_tokens: int) -> Optional[str]:
+        try:
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                response = await client.post(
+                    f"{base_url}/v1/chat/completions",
+                    json={
+                        "model": self.lm_studio_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": max_tokens,
+                        "temperature": 0.7
+                    }
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    content = data["choices"][0]["message"]["content"]
+                    # Nettoyage LM Studio
+                    content = re.sub(r'<think>[\s\S]*?</think>\s*', '', content)
+                    content = re.sub(r'\*\*([^*]+)\*\*', r'\1', content)
+                    content = content.replace('洗净', '').strip()
+                    print(f"[AI] Réponse via LM Studio ({base_url})")
+                    return content
+        except Exception as e:
+            print(f"[AI] LM Studio error: {e}")
+        return None
+
+    async def _generate_lm_studio_model(self, base_url: str, model: str, prompt: str, max_tokens: int) -> Optional[str]:
+        """Génère avec un modèle LM Studio spécifique"""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{base_url}/v1/chat/completions",
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": min(max_tokens, 500),
+                        "temperature": 0.7
+                    }
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    content = data["choices"][0]["message"]["content"]
+                    content = re.sub(r'<think>[\s\S]*?</think>\s*', '', content)
+                    content = re.sub(r'\*\*([^*]+)\*\*', r'\1', content)
+                    content = content.replace('洗净', '').strip()
+                    print(f"[AI] LM ({model}) OK")
+                    return content
+                else:
+                    print(f"[AI] LM {model}: HTTP {response.status_code}")
+        except httpx.TimeoutException:
+            print(f"[AI] LM {model}: timeout")
+        except Exception as e:
+            print(f"[AI] LM {model} error: {e}")
+        return None
+
+    # === MÉTHODES D'EXTRACTION ===
+
+    async def generate_summary(self, text: str, max_length: int = 500) -> Optional[str]:
+        prompt = f"""Résumez ce document PFE en français en {max_length} caractères maximum.
+Soignez la clarté et la concision.
+
+Texte:
+{text[:4000]}
+
+Résumé:"""
+        return await self._generate(prompt, max_tokens=max_length)
+
+    async def generate_problematic(self, text: str, max_length: int = 300) -> Optional[str]:
+        prompt = f"""Identifiez et formulez la problématique centrale de ce PFE en une phrase claire en français (max {max_length} caractères).
+
+Texte:
+{text[:4000]}
+
+Problématique:"""
+        return await self._generate(prompt, max_tokens=max_length)
+
+    async def generate_solutions(self, text: str, max_length: int = 500) -> Optional[str]:
+        prompt = f"""Résumez les solutions proposées dans ce PFE en français (max {max_length} caractères).
+
+Texte:
+{text[:4000]}
+
+Solutions proposées:"""
+        return await self._generate(prompt, max_tokens=max_length)
+
+    async def generate_keywords(self, text: str, max_keywords: int = 10) -> Optional[List[str]]:
+        prompt = f"""Extraire les {max_keywords} mots-clés les plus pertinents de ce texte.
+Retournez uniquement un tableau JSON valide.
+
+Texte:
+{text[:4000]}
+
+Mots-clés (JSON):"""
+        response = await self._generate(prompt, max_tokens=500)
+        if response:
+            try:
+                keywords = json.loads(response)
+                return keywords if isinstance(keywords, list) else []
+            except json.JSONDecodeError:
+                return re.findall(r'"([^"]+)"', response)[:max_keywords]
+        return []
+
+    async def extract_methodology(self, text: str, max_length: int = 300) -> Optional[str]:
+        prompt = f"""Décrivez la méthodologie utilisée dans ce PFE en français (max {max_length} caractères).
+Si non explicite, déduisez-la du contenu.
+
+Texte:
+{text[:4000]}
+
+Méthodologie:"""
+        return await self._generate(prompt, max_tokens=max_length)
+
+    async def extract_concepts_cles(self, text: str) -> Optional[List[str]]:
+        prompt = f"""Listez les concepts clés de ce document en JSON.
+
+Texte:
+{text[:3000]}
+
+Concepts (JSON):"""
+        response = await self._generate(prompt, max_tokens=500)
+        if response:
+            try:
+                return json.loads(response)
+            except:
+                return []
+        return []
+
+    async def generate_state_of_art(self, contexte: str, documents: List[dict]) -> Optional[str]:
+        sources = "\n\n".join([
+            f"Doc {i+1}: {d.get('titre', 'N/A')} - {d.get('auteur', 'N/A')} ({d.get('annee', 'N/A')})\n{d.get('resume', '')[:400]}"
+            for i, d in enumerate(documents[:5])
+        ])
+        prompt = f"""Rédigez l'état de l'art sur: {contexte}
+
+Sources:
+{sources}
+
+État de l'art:"""
+        return await self._generate(prompt, max_tokens=2000)
+
+    async def classify_domain(self, text: str) -> Optional[dict]:
+        domains = [
+            "intelligence_competitive", "veille_strategique", "management_information",
+            "analyse_strategique", "intelligence_economique", "gestion_connaissance",
+            "data_intelligence", "securite_informationnelle"
+        ]
+        prompt = f"""Classifiez ce document dans: {', '.join(domains)}
+Retournez JSON: {{"domaine": "...", "confiance": 0.95}}
+
+Texte:
+{text[:2000]}
+
+JSON:"""
+        response = await self._generate(prompt, max_tokens=200)
+        if response:
+            try:
+                return json.loads(response)
+            except:
+                return {"domaine": domains[0], "confiance": 0.5}
+        return None
+
+    async def generate_embedding(self, text: str) -> Optional[List[float]]:
+        """Génère un embedding via LM Studio ou APIs"""
+        lm_url = await self._find_lm_studio()
+        if lm_url:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        f"{lm_url}/v1/embeddings",
+                        json={"model": self.lm_studio_model, "input": text[:2000]}
+                    )
+                    if response.status_code == 200:
+                        return response.json().get("data", [{}])[0].get("embedding")
+            except Exception as e:
+                print(f"[AI] Embedding LM Studio échoué: {e}")
+        
+        # Fallback DeepSeek pour embeddings (si supporté)
+        print("[AI] Embedding: utilisera recherche texte classique")
+        return None
 
 
 _hybrid_service: Optional[HybridAIService] = None
