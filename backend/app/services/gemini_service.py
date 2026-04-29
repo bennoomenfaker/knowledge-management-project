@@ -4,8 +4,8 @@ from google import genai
 from google.genai import types
 from typing import Optional, Dict, List
 
-# Configure Gemini API with new SDK
-api_key = os.getenv("GEMINI_API_KEY")
+# Configure Gemini API with new SDK - check both possible env var names
+api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 def analyze_text(text: str) -> Optional[Dict[str, any]]:
     """
@@ -13,7 +13,7 @@ def analyze_text(text: str) -> Optional[Dict[str, any]]:
     Returns JSON with 'summary' (max 150 words) and 'keywords' (5-10 strings).
     """
     if not api_key:
-        print("[Gemini] GEMINI_API_KEY not set")
+        print("[Gemini] GEMINI_API_KEY nor GOOGLE_API_KEY not set")
         return None
     
     try:

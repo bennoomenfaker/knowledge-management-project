@@ -29,6 +29,7 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [domains, setDomains] = useState<DomainStat[]>([]);
   const [timeline, setTimeline] = useState<YearStat[]>([]);
+  const [emerging, setEmerging] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -37,15 +38,17 @@ export default function DashboardPage() {
 
   const loadData = async () => {
     try {
-      const [overviewRes, domainsRes, timelineRes] = await Promise.all([
+      const [overviewRes, domainsRes, timelineRes, emergingRes] = await Promise.all([
         fetch("/api/v1/analytics/overview").then(r => r.json()).catch(() => null),
         fetch("/api/v1/analytics/domains").then(r => r.json()).catch(() => ({ domains: [] })),
-        fetch("/api/v1/analytics/timeline").then(r => r.json()).catch(() => ({ years: [] }))
+        fetch("/api/v1/analytics/timeline").then(r => r.json()).catch(() => ({ years: [] })),
+        fetch("/api/v1/analytics/emerging").then(r => r.json()).catch(() => ({ topics: [] }))
       ]);
-
+      
       if (overviewRes) setStats(overviewRes);
       if (domainsRes?.domains) setDomains(domainsRes.domains);
       if (timelineRes?.years) setTimeline(timelineRes.years);
+      if (emergingRes?.topics) setEmerging(emergingRes.topics);
     } catch (error) {
       console.error("Error loading dashboard data:", error);
     } finally {
@@ -181,48 +184,32 @@ export default function DashboardPage() {
 
       <div className="bg-white rounded-xl border border-slate-200 p-6">
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-lg font-semibold text-slate-900">Actions Rapides</h2>
+          <h2 className="text-lg font-semibold text-slate-900">Moteur d'Intelligence Documentaire</h2>
+          <Link href="/search" className="text-sm text-blue-600 hover:underline">Tester la recherche</Link>
         </div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <Link href="/pfe/upload" className="flex items-center gap-4 p-4 rounded-lg border border-slate-200 hover:border-blue-300 hover:bg-blue-50 transition">
-            <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center">
-              <Upload className="w-5 h-5 text-blue-600" />
-            </div>
-            <div>
-              <p className="font-medium text-slate-900">Uploader un PFE</p>
-              <p className="text-sm text-slate-500">Ajouter un mémoire</p>
-            </div>
-          </Link>
-          
-          <Link href="/search" className="flex items-center gap-4 p-4 rounded-lg border border-slate-200 hover:border-green-300 hover:bg-green-50 transition">
-            <div className="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center">
-              <Search className="w-5 h-5 text-green-600" />
-            </div>
-            <div>
-              <p className="font-medium text-slate-900">Rechercher</p>
-              <p className="text-sm text-slate-500">Recherche IA</p>
-            </div>
-          </Link>
-          
-          <Link href="/pfe" className="flex items-center gap-4 p-4 rounded-lg border border-slate-200 hover:border-purple-300 hover:bg-purple-50 transition">
-            <div className="w-10 h-10 rounded-lg bg-purple-100 flex items-center justify-center">
-              <BookOpen className="w-5 h-5 text-purple-600" />
-            </div>
-            <div>
-              <p className="font-medium text-slate-900">Tous les PFE</p>
-              <p className="text-sm text-slate-500">Parcourir</p>
-            </div>
-          </Link>
-          
-          <Link href="/analytics" className="flex items-center gap-4 p-4 rounded-lg border border-slate-200 hover:border-orange-300 hover:bg-orange-50 transition">
-            <div className="w-10 h-10 rounded-lg bg-orange-100 flex items-center justify-center">
-              <BarChart3 className="w-5 h-5 text-orange-600" />
-            </div>
-            <div>
-              <p className="font-medium text-slate-900">Analytics</p>
-              <p className="text-sm text-slate-500">Statistiques</p>
-            </div>
-          </Link>
+          <div className="p-4 bg-blue-50 rounded-lg">
+            <h3 className="font-medium text-blue-900 mb-2">TF-IDF</h3>
+            <p className="text-sm text-blue-700">Algorithme de pertinence basé sur la fréquence des termes</p>
+          </div>
+          <div className="p-4 bg-green-50 rounded-lg">
+            <h3 className="font-medium text-green-900 mb-2">Parsing de Sections</h3>
+            <p className="text-sm text-green-700">Extraction automatique: Problématique, Solution, Conclusion</p>
+          </div>
+          <div className="p-4 bg-purple-50 rounded-lg">
+            <h3 className="font-medium text-purple-900 mb-2">PostgreSQL Full-Text</h3>
+            <p className="text-sm text-purple-700">Recherche dans titre, résumé, mots-clés</p>
+          </div>
+          <div className="p-4 bg-orange-50 rounded-lg">
+            <h3 className="font-medium text-orange-900 mb-2">Surlignage</h3>
+            <p className="text-sm text-orange-700">Extraits pertinents avec mots surlignés en <mark>jaune</mark></p>
+          </div>
+        </div>
+        <div className="mt-4 p-4 bg-slate-50 rounded-lg">
+          <p className="text-sm text-slate-600">
+            <strong>Fonctionnement:</strong> Ce moteur fonctionne SANS IA cloud. Il utilise l'analyse de texte (PyMuPDF), 
+            le classement TF-IDF et la recherche plein texte PostgreSQL pour trouver les documents pertinents.
+          </p>
         </div>
       </div>
     </div>

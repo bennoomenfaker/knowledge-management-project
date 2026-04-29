@@ -43,7 +43,19 @@ interface PFE {
   domaine_vic: string;
   mots_cles: string[];
   resume: string;
+  summary: string;
+  keywords: string[];
+  problematic: string;
+  solutions: string;
   status?: string;
+  relevance_score?: number;
+  snippet?: string;
+  highlighted_sections?: {
+    problematic?: string;
+    solution?: string;
+    resume?: string;
+    summary?: string;
+  };
 }
 
 export default function SearchPage() {
@@ -51,7 +63,7 @@ export default function SearchPage() {
   const [results, setResults] = useState<PFE[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
-  const [searchType, setSearchType] = useState<"full-text" | "semantic" | "hybrid">("hybrid");
+  const [searchType, setSearchType] = useState<"full-text" | "semantic" | "hybrid" | "global">("global");
   const [filters, setFilters] = useState({
     domaine_vic: "",
     institution: "",
@@ -150,7 +162,7 @@ export default function SearchPage() {
     }
   };
 
-  const handleSearch = async (type: "full-text" | "semantic" | "hybrid" = "hybrid") => {
+  const handleSearch = async (type: "full-text" | "semantic" | "hybrid" | "global" = "global") => {
     if (!query.trim()) return;
     
     setLoading(true);
@@ -161,7 +173,7 @@ export default function SearchPage() {
       const { data: { session } } = await supabase.auth.getSession();
       const authToken = session?.access_token;
       
-      const endpoint = `/api/v1/search/${type}`;
+      const endpoint = type === "global" ? `/api/v1/search/global` : `/api/v1/search/${type}`;
       const body: any = { query, limit: 20 };
       
       const filterParams: any = {};
@@ -185,7 +197,18 @@ export default function SearchPage() {
       });
       
       const data = await response.json();
-      setResults(data.results || []);
+      
+      // Global search returns {results: [{pfe, relevance_score, snippet, highlighted_sections}]}
+      if (type === "global" && data.results) {
+        setResults(data.results.map((r: any) => ({
+          ...r.pfe,
+          relevance_score: r.relevance_score,
+          snippet: r.snippet,
+          highlighted_sections: r.highlighted_sections
+        })));
+      } else {
+        setResults(data.results || []);
+      }
     } catch (error) {
       console.error("Search error:", error);
       setResults([]);
@@ -319,9 +342,17 @@ export default function SearchPage() {
             <button
               onClick={() => query.trim() ? handleSearch("hybrid") : handleSearchWithFilters()}
               disabled={loading}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm"
+              className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 disabled:opacity-50 text-sm"
             >
               Hybride
+            </button>
+            <button
+              onClick={() => query.trim() ? handleSearch("global") : handleSearchWithFilters()}
+              disabled={loading}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm flex items-center gap-2"
+            >
+              <SearchIcon className="w-4 h-4" />
+              Global (IA Document)
             </button>
           </div>
         </div>
@@ -363,7 +394,14 @@ export default function SearchPage() {
                 <div key={pfe.id} className="bg-white rounded-xl border border-slate-200 p-6 hover:border-blue-300 transition">
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1">
-                      <h3 className="text-lg font-semibold text-slate-900 mb-2">{pfe.titre}</h3>
+                      <div className="flex items-center gap-2 mb-2">
+                        <h3 className="text-lg font-semibold text-slate-900">{pfe.titre}</h3>
+                        {pfe.relevance_score !== undefined && (
+                          <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs">
+                            {Math.round(pfe.relevance_score * 100)}% pertinent
+                          </span>
+                        )}
+                      </div>
                       
                       <div className="flex flex-wrap items-center gap-4 text-sm text-slate-600 mb-3">
                         <div className="flex items-center gap-1">
@@ -385,22 +423,59 @@ export default function SearchPage() {
                           </span>
                         </div>
                       </div>
-                      
-                      {pfe.resume && (
-                        <p className="text-slate-600 text-sm line-clamp-2">{pfe.resume}</p>
+
+                      {/* AI Summary */}
+                      {pfe.summary && (
+                        <p className="text-slate-600 text-sm line-clamp-2 mb-2">
+                          <span className="font-medium">Résumé IA:</span> {pfe.summary}
+                        </p>
                       )}
-                      
-                      {pfe.mots_cles && pfe.mots_cles.length > 0 && (
+
+                      {/* Highlighted Snippet from Document Intelligence */}
+                      {pfe.snippet && (
+                        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-3">
+                          <p className="text-sm text-slate-700">
+                            <span className="font-medium">Extrait pertinent:</span>{' '}
+                            <span dangerouslySetInnerHTML={{ __html: pfe.snippet }} />
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Highlighted Sections */}
+                      {pfe.highlighted_sections && (
+                        <div className="space-y-2 mb-3">
+                          {pfe.highlighted_sections.problematic && (
+                            <div className="bg-blue-50 rounded p-2">
+                              <p className="text-xs font-semibold text-blue-900 mb-1">Problématique:</p>
+                              <p className="text-sm text-blue-800" dangerouslySetInnerHTML={{ __html: pfe.highlighted_sections.problematic }} />
+                            </div>
+                          )}
+                          {pfe.highlighted_sections.solution && (
+                            <div className="bg-green-50 rounded p-2">
+                              <p className="text-xs font-semibold text-green-900 mb-1">Solution:</p>
+                              <p className="text-sm text-green-800" dangerouslySetInnerHTML={{ __html: pfe.highlighted_sections.solution }} />
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Keywords */}
+                      {pfe.keywords && pfe.keywords.length > 0 && (
                         <div className="flex flex-wrap gap-2 mt-3">
-                          {pfe.mots_cles.slice(0, 5).map((kw, i) => (
-                            <span key={i} className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs">
+                          {pfe.keywords.slice(0, 5).map((kw, i) => (
+                            <span key={i} className="px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs">
                               {kw}
                             </span>
                           ))}
                         </div>
                       )}
+
+                      {/* Traditional resume */}
+                      {pfe.resume && !pfe.snippet && (
+                        <p className="text-slate-600 text-sm line-clamp-2">{pfe.resume}</p>
+                      )}
                     </div>
-                    
+
                     <div className="flex flex-col gap-2">
                       <Link
                         href={`/pfe/${pfe.id}`}

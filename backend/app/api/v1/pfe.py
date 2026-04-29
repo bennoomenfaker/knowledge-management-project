@@ -7,7 +7,7 @@ from app.models.pfe import PFECreate, PFEUpdate, PFEResponse, UploadResponse, Me
 from app.services.supabase_service import get_supabase_service, SupabaseService
 from app.services.storage_service import get_storage_service, StorageService
 from app.services.document_service import get_document_service, DocumentService
-from app.services.ai_service import get_hybrid_ai_service, HybridAIService
+from app.services.ai_analysis_engine import AIAnalysisEngine
 from app.services.gemini_service import analyze_text as gemini_analyze
 
 
@@ -21,7 +21,6 @@ async def upload_pfe(
     supabase_service: SupabaseService = Depends(get_supabase_service),
     storage_service: StorageService = Depends(get_storage_service),
     document_service: DocumentService = Depends(get_document_service),
-    ai_service: HybridAIService = Depends(get_hybrid_ai_service),
     current_user: dict = Depends(get_current_user)
 ):
     try:
@@ -64,93 +63,118 @@ async def upload_pfe(
         print(f"Database error: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     
-    # Lancer le traitement IA en arrière-plan
-    import asyncio
-    asyncio.create_task(
-        process_pfe_async(str(pfe_id), pdf_content, document_service, ai_service, supabase_service)
-    )
-    
     return UploadResponse(
         pfe_id=pfe_id,
-        message="PFE uploaded successfully. AI processing started in background.",
-        status="en_traitement"
+        message="PFE uploaded successfully. Use POST /api/v1/pfe/{pfe_id}/analyze to start AI analysis.",
+        status="en_attente"
     )
 
 
-async def process_pfe_async(pfe_id, pdf_content, document_service, ai_service, supabase_service):
+async def process_pfe_with_engine(pfe_id, pdf_content, document_service, supabase_service):
+    """Process PFE using the new AI Analysis Engine with fallback chain"""
+    from app.services.ai_analysis_engine import AIAnalysisEngine
+    engine = AIAnalysisEngine()
+    
     try:
         await supabase_service.update_pfe_status(pfe_id, "en_traitement")
         
+        # Extract text from PDF
         text = await document_service.extract_text_from_pdf(pdf_content)
+        if not text:
+            print(f"[Engine] No text extracted from PDF")
+            await supabase_service.update_pfe_status(pfe_id, "erreur")
+            return
+            
+        text_clean = document_service.clean_text(text)
         
-        if text:
-            text_clean = document_service.clean_text(text)
-            
-            # Génération parallèle pour accélérer
-            import asyncio
-            
-            summary_task = ai_service.generate_summary(text_clean)
-            keywords_task = ai_service.generate_keywords(text_clean)
-            problematic_task = ai_service.generate_problematic(text_clean)
-            methodology_task = ai_service.extract_methodology(text_clean)
-            solutions_task = ai_service.generate_solutions(text_clean)
-            
-            # Gemini analysis (new)
-            gemini_task = asyncio.to_thread(gemini_analyze, text_clean)
-            
-            summary, keywords, problematic, methodology, solutions, gemini_result = await asyncio.gather(
-                summary_task, keywords_task, problematic_task, 
-                methodology_task, solutions_task, gemini_task, return_exceptions=True
-            )
-            
-            update_data = {}
-            if summary and not isinstance(summary, Exception):
-                update_data["resume"] = summary
-            if keywords and not isinstance(keywords, Exception):
-                update_data["mots_cles"] = keywords if isinstance(keywords, list) else []
-            if problematic and not isinstance(problematic, Exception):
-                update_data["problematic"] = problematic
-            if methodology and not isinstance(methodology, Exception):
-                update_data["methodology"] = methodology
-            if solutions and not isinstance(solutions, Exception):
-                update_data["solutions"] = solutions
-            
-            # Add Gemini results
-            if gemini_result and not isinstance(gemini_result, Exception):
+        # Run AI Analysis Engine (Gemini → DeepSeek → LM Studio)
+        import asyncio
+        analysis = await engine.analyze_pfe(text_clean, max_summary_words=150)
+        
+        update_data = {}
+        if analysis:
+            print(f"[Engine] Analysis complete")
+            if analysis.get("summary"):
+                update_data["summary"] = analysis["summary"]
+                print(f"[Engine] Summary: {len(analysis['summary'])} chars")
+            if analysis.get("keywords"):
+                update_data["keywords"] = analysis["keywords"] if isinstance(analysis["keywords"], list) else []
+                print(f"[Engine] Keywords: {len(analysis['keywords'])} items")
+            if analysis.get("problematic"):
+                update_data["problematic"] = analysis["problematic"]
+            if analysis.get("solution"):
+                update_data["solutions"] = analysis["solution"]
+            if analysis.get("state_of_art"):
+                update_data["state_of_art"] = analysis["state_of_art"]
+        else:
+            print(f"[Engine] AI analysis failed, falling back to individual services")
+            # Fallback to individual Gemini service
+            gemini_result = await asyncio.to_thread(gemini_analyze, text_clean)
+            if gemini_result:
                 update_data["summary"] = gemini_result.get("summary")
                 update_data["keywords"] = gemini_result.get("keywords")
-                print(f"[Gemini] Analysis complete: summary={len(gemini_result.get('summary', ''))} chars, keywords={len(gemini_result.get('keywords', []))}")
-            
-            # État de l'art (nécessite d'autres documents, fait séparément)
-            try:
-                docs = supabase_service.supabase.table("pfe_documents").select("titre,auteur,annee,resume").limit(5).execute()
-                if docs.data:
-                    state_of_art = await ai_service.generate_state_of_art(text_clean[:500], docs.data)
-                    if state_of_art:
-                        update_data["state_of_art"] = state_of_art
-            except Exception as e:
-                print(f"State of art error: {e}")
-            
-            if update_data:
-                supabase_service.supabase.table("pfe_documents").update(update_data).eq("id", pfe_id).execute()
         
-        # Embedding (si LM Studio dispo)
-        embedding = await ai_service.generate_embedding(text_clean[:2000] if text else "")
-        if embedding:
-            try:
+        # Also run existing hybrid AI service for resume, methodology, etc.
+        from app.services.ai_service import get_hybrid_ai_service
+        ai_service = get_hybrid_ai_service()
+        
+        import asyncio
+        summary_task = ai_service.generate_summary(text_clean)
+        keywords_task = ai_service.generate_keywords(text_clean)
+        problematic_task = ai_service.generate_problematic(text_clean)
+        methodology_task = ai_service.extract_methodology(text_clean)
+        solutions_task = ai_service.generate_solutions(text_clean)
+        
+        summary, keywords, problematic, methodology, solutions = await asyncio.gather(
+            summary_task, keywords_task, problematic_task, 
+            methodology_task, solutions_task, return_exceptions=True
+        )
+        
+        if summary and not isinstance(summary, Exception):
+            update_data["resume"] = summary
+        if keywords and not isinstance(keywords, Exception) and "keywords" not in update_data:
+            update_data["mots_cles"] = keywords if isinstance(keywords, list) else []
+        if problematic and not isinstance(problematic, Exception) and "problematic" not in update_data:
+            update_data["problematic"] = problematic
+        if methodology and not isinstance(methodology, Exception):
+            update_data["methodology"] = methodology
+        if solutions and not isinstance(solutions, Exception) and "solutions" not in update_data:
+            update_data["solutions"] = solutions
+        
+        # State of art
+        try:
+            docs = supabase_service.supabase.table("pfe_documents").select("titre,auteur,annee,resume").limit(5).execute()
+            if docs.data:
+                state_of_art = await ai_service.generate_state_of_art(text_clean[:500], docs.data)
+                if state_of_art and "state_of_art" not in update_data:
+                    update_data["state_of_art"] = state_of_art
+        except Exception as e:
+            print(f"State of art error: {e}")
+        
+        if update_data:
+            supabase_service.supabase.table("pfe_documents").update(update_data).eq("id", pfe_id).execute()
+            print(f"[Engine] Updated PFE {pfe_id} with {len(update_data)} fields")
+        
+        # Embedding
+        try:
+            embedding = await ai_service.generate_embedding(text_clean[:2000])
+            if embedding:
                 emb_list = embedding.tolist() if hasattr(embedding, 'tolist') else embedding
                 supabase_service.supabase.table("pfe_embeddings").insert({
                     "pfe_id": pfe_id,
                     "embedding": str(emb_list),
                     "model_used": "hybrid"
                 }).execute()
-            except Exception as e:
-                print(f"Embedding save error: {e}")
+        except Exception as e:
+            print(f"Embedding save error: {e}")
         
         await supabase_service.update_pfe_status(pfe_id, "complete")
-        print(f"[AI] Traitement PFE {pfe_id} terminé avec succès")
+        print(f"[Engine] Processing PFE {pfe_id} completed successfully")
+        
     except Exception as e:
         print(f"Processing error: {e}")
+        import traceback
+        traceback.print_exc()
         await supabase_service.update_pfe_status(pfe_id, "erreur")
 
 
@@ -236,14 +260,14 @@ async def delete_pfe(
 
 
 @router.post("/{pfe_id}/analyze", response_model=MessageResponse)
-async def analyze_pfe_with_gemini(
+async def analyze_pfe_with_ai(
     pfe_id: UUID,
     supabase_service: SupabaseService = Depends(get_supabase_service),
     storage_service: StorageService = Depends(get_storage_service),
     document_service: DocumentService = Depends(get_document_service),
     current_user: dict = Depends(get_current_user)
 ):
-    """Manually trigger Gemini analysis for a PFE"""
+    """Manually trigger AI analysis for a PFE (LM Studio Qwen → Gemini → DeepSeek)"""
     pfe = await supabase_service.get_pfe(str(pfe_id))
     if not pfe:
         raise HTTPException(status_code=404, detail="PFE not found")
@@ -264,24 +288,26 @@ async def analyze_pfe_with_gemini(
         
         text_clean = document_service.clean_text(text)
         
-        # Run Gemini analysis
-        from app.services.gemini_service import analyze_text as gemini_analyze
-        import asyncio
-        
-        result = await asyncio.to_thread(gemini_analyze, text_clean)
+        # Run AI analysis with engine (Qwen first)
+        engine = AIAnalysisEngine()
+        result = await engine.analyze_pfe(text_clean)
         
         if not result:
-            raise HTTPException(status_code=500, detail="Gemini analysis failed")
+            raise HTTPException(status_code=500, detail="AI analysis failed - all providers unavailable")
         
         # Update database
-        update_data = {
-            "summary": result.get("summary"),
-            "keywords": result.get("keywords")
-        }
+        update_data = {}
+        if result.get("summary"):
+            update_data["resume"] = result.get("summary")
+        if result.get("keywords"):
+            update_data["mots_cles"] = result.get("keywords") if isinstance(result.get("keywords"), list) else []
+        if result.get("problematic"):
+            update_data["problematic"] = result.get("problematic")
         
-        supabase_service.supabase.table("pfe_documents").update(update_data).eq("id", str(pfe_id)).execute()
+        if update_data:
+            supabase_service.supabase.table("pfe_documents").update(update_data).eq("id", str(pfe_id)).execute()
         
-        return MessageResponse(message="Analyse Gemini terminée avec succès")
+        return MessageResponse(message=f"Analyse IA terminée avec succès via {result.get('provider', 'AI')}")
         
     except HTTPException:
         raise

@@ -73,6 +73,10 @@ class SupabaseQuery:
             self._order = order_str
         return self
     
+    def limit(self, count: int):
+        self._limit = count
+        return self
+
     def range(self, start: int, end: int):
         self._range = (start, end)
         return self
@@ -85,14 +89,19 @@ class SupabaseQuery:
         if hasattr(self, '_order'):
             url += f"&{self._order}"
         
-        headers = {**self.client.headers, "Range": f"{self._range[0]}-{self._range[1]}"} if hasattr(self, '_range') else self.client.headers
+        headers = self.client.headers
+        
+        if hasattr(self, '_limit') and not hasattr(self, '_range'):
+            headers = {**headers, "Range": f"0-{self._limit - 1}"}
+        elif hasattr(self, '_range'):
+            headers = {**headers, "Range": f"{self._range[0]}-{self._range[1]}"}
         
         resp = httpx.get(url, headers=headers, timeout=30.0)
         
         if resp.status_code == 200:
             data = resp.json()
             result = {"data": data}
-            if hasattr(self, '_range'):
+            if hasattr(self, '_range') or hasattr(self, '_limit'):
                 result["count"] = len(data)
             return result
         print(f"Query error: {resp.status_code} - {resp.text}")
